@@ -1,10 +1,11 @@
 import streamlit as st
+import torch
 import numpy as np
 from PIL import Image
-import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
+from torchvision import transforms
 import timm
+import torch.nn as nn
+import io
 import base64
 
 # Page configuration
@@ -383,13 +384,21 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# Define the model architecture
+# Model Architecture Definition
 class WheatDiseaseModel(nn.Module):
     def __init__(self, num_classes=5):
         super(WheatDiseaseModel, self).__init__()
         self.backbone = timm.create_model("convnext_base", pretrained=False, features_only=True)
         backbone_out_channels = self.backbone.feature_info[-1]['num_chs']
-        
+
+        self.segmentation_head = nn.Sequential(
+            nn.Conv2d(backbone_out_channels, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(256, 1, kernel_size=2, stride=2),
+            nn.Sigmoid()
+        )
+
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Sequential(
             nn.Linear(backbone_out_channels, 256),
@@ -400,58 +409,41 @@ class WheatDiseaseModel(nn.Module):
 
     def forward(self, x):
         features = self.backbone(x)[-1]
+        seg_mask = self.segmentation_head(features)
         pooled = self.avgpool(features).flatten(1)
         class_logits = self.classifier(pooled)
-        return class_logits
+        return seg_mask, class_logits
 
-# Update preprocessing for ConvNeXt
-def preprocess_image(img):
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-    ])
-    
-    # Ensure image is RGB
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
-    
-    # Apply transformations and add batch dimension
-    img_tensor = transform(img)
-    img_tensor = img_tensor.unsqueeze(0)
-    return img_tensor
-
-# Update model loading
+# PyTorch Model Loading
 @st.cache_resource
 def load_model():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = WheatDiseaseModel(num_classes=5)
-    model.load_state_dict(torch.load('./wheat_disease_model.pth', map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("./wheat_disease_model.pth", map_location=device))
+    model.to(device)
     model.eval()
     return model
 
-# Update prediction function
+# Prediction Function
 def model_prediction(image_data):
     model = load_model()
+    device = next(model.parameters()).device
     
-    # Handle different input types (same as before)
-    if isinstance(image_data, str):  # For camera input
-        image = Image.open(image_data)
-    else:  # For uploaded files
-        image = Image.open(image_data)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
     
-    # Preprocess image
-    input_tensor = preprocess_image(image)
+    image = Image.open(image_data).convert('RGB')
+    input_tensor = transform(image).unsqueeze(0).to(device)
     
-    # Inference with PyTorch
     with torch.no_grad():
-        outputs = model(input_tensor)
-        probabilities = torch.nn.functional.softmax(outputs, dim=1)
-        result_index = torch.argmax(probabilities, dim=1).item()
+        _, class_logits = model(input_tensor)
+        probs = torch.nn.functional.softmax(class_logits, dim=1)
     
-    return result_index
+    return torch.argmax(probs).item()
 
 # Header Banner with Wheat Image
 st.markdown("""
