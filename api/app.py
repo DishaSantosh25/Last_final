@@ -535,7 +535,7 @@ with col2:
             if st.button("Analyze Image", key="analyze_upload"):
                 with st.spinner("📊 Analyzing your wheat leaf..."):
                     result_index = model_prediction(uploaded_file)
-                    class_names = ["Brown_rust", "Healthy", "Loose_Smut", "septoria" , "Yellow_rust"]
+                    class_names = ["Brown_rust", "Healthy", "Loose_Smut", "Yellow_rust","septoria"]
                     
                     st.markdown('<div class="result-container">', unsafe_allow_html=True)
                     
